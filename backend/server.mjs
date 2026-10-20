@@ -347,7 +347,7 @@ async function processJob(job, body) {
       },
       body: JSON.stringify(renderBody),
       signal: AbortSignal.timeout(
-        body.withVideo ? 180000 : 85000
+        body.withVideo ? 390000 : 120000
       )
     });
 
@@ -383,6 +383,7 @@ async function processJob(job, body) {
 
     saveJob(job);
   } catch (e) {
+    console.error('[Render job failed]',job.id,e);
     job.status = 'failed';
     job.stage = 'Generation failed';
     job.error = e.message;
@@ -548,6 +549,12 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      // One HD renderer job at a time on low-RAM Render plans.
+      if ([...jobs.values()].some((job) => job.status === 'working')) {
+        return reply(res, 429, {
+          error: 'Another image/video is generating. Wait for it to finish before starting another.'
+        });
+      }
       const body = validate(await jsonBody(req));
 
       if (

@@ -87,6 +87,7 @@ export class AppComponent implements OnInit, OnDestroy {
   galleryError = '';
 
   timer: ReturnType<typeof setInterval> | undefined;
+  private pollFailures = 0;
 
   copied = '';
 
@@ -378,6 +379,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.busy = true;
 
     this.statusMessage = 'Creating job…';
+    this.pollFailures = 0;
 
     localStorage.setItem(
       'quotecraft-api-base',
@@ -487,11 +489,18 @@ export class AppComponent implements OnInit, OnDestroy {
         { cache: 'no-store' }
       );
 
-      if (!r.ok) {
-        throw Error(
-          `Cannot load job (HTTP ${r.status})`
-        );
+      if (r.status === 404) {
+        this.busy = false;
+        if (this.timer) clearInterval(this.timer);
+        this.error = 'Render restarted and lost this job. Check Render Logs for Out of memory or a crash, then start a new generation.';
+        this.statusMessage = 'Generation interrupted';
+        this.cdr.markForCheck();
+        return;
       }
+      if (!r.ok) {
+        throw Error(`Cannot load job (HTTP ${r.status})`);
+      }
+      this.pollFailures = 0;
 
       const j: Job = await r.json();
 
@@ -516,11 +525,13 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       }
     } catch (e) {
-      this.statusMessage =
-        `Waiting for renderer: ${
-          e instanceof Error ? e.message : String(e)
-        }`;
-
+      this.pollFailures += 1;
+      if (this.pollFailures >= 15) {
+        this.busy = false;
+        if (this.timer) clearInterval(this.timer);
+        this.error = 'Backend unavailable for too long. Check the Render Logs and /api/health before retrying.';
+      }
+      this.statusMessage = `Waiting for renderer (${this.pollFailures}/15): ${e instanceof Error ? e.message : String(e)}`;
       this.cdr.markForCheck();
     }
   }

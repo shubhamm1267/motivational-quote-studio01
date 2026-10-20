@@ -5,6 +5,8 @@ FROM node:22-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production \
+    MALLOC_ARENA_MAX=2 \
+    OMP_NUM_THREADS=1 \
     PATH="/opt/quote-venv/bin:$PATH"
 
 WORKDIR /app

@@ -5,7 +5,7 @@ No reference images / watermarks are copied. Layout, palette and type rendering
 are procedural; quoted content is new, with user-controlled brand overlay.
 """
 from __future__ import annotations
-import hashlib, math, random, re, shutil, subprocess
+import hashlib, math, os, random, re, shutil, subprocess
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 
@@ -38,7 +38,8 @@ PALETTES = {
 }
 YELLOW=(246,239,59,255)
 # Render feed posts at 2x logical resolution; video artworks remain native 1080x1920.
-POST_EXPORT_SCALE=2
+# Render Free memory budget: preserve sharp native 1080px output; local can export 2x.
+POST_EXPORT_SCALE=max(1,min(2,int(os.environ.get('QUOTE_IMAGE_SCALE', '1' if os.environ.get('RENDER')=='true' else '2'))))
 INK=(18,17,16,255)
 
 _FONT_PATHS={}

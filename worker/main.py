@@ -14,6 +14,8 @@ else:
 
 ROOT=Path(__file__).resolve().parent.parent
 OUT=ROOT/'output'; OUT.mkdir(exist_ok=True)
+# Auto-select resource-safe rendering on Render; set QUOTE_LOW_MEMORY=0 to opt out.
+LOW_MEMORY_RENDER=os.getenv('QUOTE_LOW_MEMORY','1' if os.getenv('RENDER')=='true' else '0') == '1'
 app=FastAPI(title='QuoteCraft Poster Rendering Worker')
 
 class RenderRequest(BaseModel):
@@ -164,7 +166,7 @@ def paste_uploaded_icon(base:Image.Image, icon:Image.Image, theme:str):
     base.paste(framed,(x,y),framed)
 
 def draw_poster(post,brand,handle,style,size,directory,icon:Image.Image|None=None):
-    scale=2  # Full-resolution image export, including the legacy dark template.
+    scale=1 if LOW_MEMORY_RENDER else 2  # Render Free avoids memory-heavy 2x bitmap; local remains 2x.
     bw,bh=(1080,1350) if size=='portrait' else (1080,1080)
     w,h=bw*scale,bh*scale
     # Background is an intentionally soft texture; type is natively rasterized at 2x.
@@ -255,6 +257,40 @@ def render_video_shorts(poster_path:Path, duration:int, out_dir:Path, effect_sty
         raise RuntimeError('FFmpeg not found in PATH. Install FFmpeg to export MP4 videos.')
     frame_path=prepare_shorts_frame(poster_path,out_dir)
     out_mp4=out_dir/'reel.mp4'
+    if LOW_MEMORY_RENDER:
+        # Render Free: one still-image input and one x264 thread instead of three
+        # simultaneous Full-HD overlay streams. The effect is baked into the
+        # artwork before encoding (not animated). This prevents huge memory spikes.
+        source=frame_path
+        if effect_style!='none':
+            with Image.open(frame_path) as base:
+                composed=base.convert('RGBA')
+            if effect_style in ('reference','float'):
+                smoke=out_dir/'smoke.png'
+                make_smoke_overlay(smoke)
+                with Image.open(smoke) as overlay:
+                    composed=Image.alpha_composite(composed,overlay.convert('RGBA'))
+            if effect_style in ('reference','softGlow','float'):
+                glow=out_dir/'glow.png'
+                make_glow_overlay(glow,theme_style)
+                with Image.open(glow) as overlay:
+                    composed=Image.alpha_composite(composed,overlay.convert('RGBA'))
+            source=out_dir/'safe_effect_frame.png'
+            composed.convert('RGB').save(source,format='PNG')
+            composed.close()
+        fps=30
+        cmd=['ffmpeg','-hide_banner','-loglevel','error','-y',
+             '-filter_threads','1','-threads','1','-framerate',str(fps),
+             '-loop','1','-i',str(source),'-t',str(duration),
+             '-an','-c:v','libx264','-preset','ultrafast','-crf','20',
+             '-threads','1','-pix_fmt','yuv420p','-movflags','+faststart',
+             str(out_mp4)]
+        result=subprocess.run(cmd,capture_output=True,text=True,timeout=360)
+        if result.returncode!=0:
+            raise RuntimeError('Safe FFmpeg render failed: '+result.stderr[-800:])
+        if not out_mp4.exists() or out_mp4.stat().st_size<8000:
+            raise RuntimeError('MP4 render failed or file too small')
+        return out_mp4
     if effect_style=='none':
         cmd=['ffmpeg','-hide_banner','-loglevel','error','-y','-loop','1','-i',str(frame_path),'-t',str(duration),'-r','30','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(out_mp4)]
         result=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
@@ -308,6 +344,8 @@ def render(payload:RenderRequest):
     else:
         details={'template':'classic_dark','format':'quote','layout':'Original Dark Poster'}
         poster_path=draw_poster(payload.post,payload.brand,payload.handle,payload.style,payload.size,folder,icon)
+    if payload.withVideo and LOW_MEMORY_RENDER and payload.effectEnabled and payload.effectStyle!='none':
+        warnings.append('Render Free safety mode uses a static effect overlay to prevent memory crashes.')
     if details.get('copyShortened'):
         warnings.append('Some secondary copy was shortened to keep the poster readable without clipping. Choose portrait for long lists.')
     assets={'poster':f'/output/{payload.jobId}/poster.png','credits':f'/output/{payload.jobId}/credits.txt','metadata':f'/output/{payload.jobId}/metadata.json'}
