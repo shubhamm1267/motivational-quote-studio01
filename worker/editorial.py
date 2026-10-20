@@ -1,3 +1,4 @@
+
 """18 original editorial layouts inspired by user supplied design references.
 
 No reference images / watermarks are copied. Layout, palette and type rendering
@@ -36,6 +37,8 @@ PALETTES = {
  'blush': ((249,189,170),(244,169,150),(253,202,183)),
 }
 YELLOW=(246,239,59,255)
+# Render feed posts at 2x logical resolution; video artworks remain native 1080x1920.
+POST_EXPORT_SCALE=2
 INK=(18,17,16,255)
 
 _FONT_PATHS={}
@@ -123,25 +126,43 @@ def wrapped_tokens(draw,s,font,width,phrases):
     return lines
 
 def paint_line(d,line,x,y,font,sz,alignment='left',accent=True):
-    total=text_width(d,' '.join(t for t,_ in line),font)
-    if alignment=='center':x-=total/2
+    """Full-glyph-height highlighter, drawn *behind* the complete marked words.
+
+    Pillow positions a font's top differently from the nominal font size.
+    Using fixed y + 0.2 * font_size rectangles clipped descenders and made
+    highlighted words look only half covered. Use actual text bounds instead.
+    """
+    text=' '.join(word for word,_ in line)
+    if not text:
+        return
+    total=text_width(d,text,font)
+    if alignment=='center':
+        x-=total/2
+    # Sample includes high capitals/accents and below-baseline glyphs. The full
+    # height is constant for all highlights in one line to avoid jagged blocks.
+    bbox=d.textbbox((0,0),'ÁÉAjgpqy',font=font)
+    pad=max(2,round(sz*.055))
+    top=round(y+bbox[1]-pad)
+    bottom=round(y+bbox[3]+pad)
     space=text_width(d,' ',font)
-    # Marker swipe is thinner than a solid highlight rectangle, precisely behind glyphs.
+    cx=x
+    run_start=None
+    run_end=None
     if accent:
-        left=None;right=None
-        cx=x
-        for word,hi in line:
-            tw=text_width(d,word,font)
-            if hi:
-                if left is None:left=cx
-                right=cx+tw
-            elif left is not None:
-                d.rectangle((int(left-5),int(y+sz*.20),int(right+5),int(y+sz*.82)),fill=YELLOW)
-                left=right=None
-            cx+=tw+space
-        if left is not None:
-            d.rectangle((int(left-5),int(y+sz*.20),int(right+5),int(y+sz*.82)),fill=YELLOW)
-    d.text((round(x),round(y)), ' '.join(t for t,_ in line), font=font,fill=INK,stroke_width=0)
+        for word,marked in line:
+            right=cx+text_width(d,word,font)
+            if marked:
+                if run_start is None:
+                    run_start=cx
+                run_end=right
+            elif run_start is not None:
+                d.rectangle((round(run_start-pad),top,round(run_end+pad),bottom),fill=YELLOW)
+                run_start=None
+                run_end=None
+            cx=right+space
+        if run_start is not None:
+            d.rectangle((round(run_start-pad),top,round(run_end+pad),bottom),fill=YELLOW)
+    d.text((round(x),round(y)),text,font=font,fill=INK,stroke_width=0)
 
 def render_textblock(d,lines,x,y,font,size,line_step,alignment='left'):
     for line in lines:
@@ -179,7 +200,7 @@ def choose_template(requested='auto',post=None):
     if post and post.get('template') in TEMPLATES:return post['template']
     return random.choice(list(TEMPLATES))
 
-def compute_layout(d,blocks,x,width,bounds_h,position,centered,hindi):
+def compute_layout(d,blocks,x,width,bounds_h,position,centered,hindi,scale=1):
     """Fit all text segments AS A GROUP, avoiding cutoffs and overlaps."""
     title,paras,items,closing,highs=blocks
     fmt=position
@@ -191,7 +212,7 @@ def compute_layout(d,blocks,x,width,bounds_h,position,centered,hindi):
     elif kind not in ('numbered','list','letter') and not paras and items:
         paras=[(' '.join(items),[])]
         items=[]
-    title_candidates=[78,74,70,66,62,58,54,50,46,42]
+    title_candidates=[int(n*scale) for n in (78,74,70,66,62,58,54,50,46,42)]
     if len(title)>82:title_candidates=title_candidates[2:]
     if hindi:title_candidates=[int(x*.88) for x in title_candidates]
     for tit_sz in title_candidates:
@@ -199,14 +220,14 @@ def compute_layout(d,blocks,x,width,bounds_h,position,centered,hindi):
         try:title_lines=wrapped_tokens(d,title,font_t,width,title_hi)
         except ValueError:continue
         if len(title_lines)>5:continue
-        paragraph_sizes=list(range(43,25,-2)) if not hindi else list(range(37,23,-2))
-        if len(items)>8: paragraph_sizes=[35,33,31,29,27,25]
+        paragraph_sizes=([n*scale for n in range(43,25,-2)] if not hindi else [n*scale for n in range(37,23,-2)])
+        if len(items)>8: paragraph_sizes=[n*scale for n in (35,33,31,29,27,25)]
         for body_sz in paragraph_sizes:
             bodyfont=editorial_font(body_sz,False,hindi)
             try:
                 paragraph_lines=[wrapped_tokens(d,t,bodyfont,width,[*hi,*highs]) for t,hi in paras]
-                list_lines=[wrapped_tokens(d,t,bodyfont,width-55,highs) for t in items]
-                endfont=editorial_font(max(27,body_sz-1),False,hindi)
+                list_lines=[wrapped_tokens(d,t,bodyfont,width-55*scale,highs) for t in items]
+                endfont=editorial_font(max(27*scale,body_sz-scale),False,hindi)
                 endlines=wrapped_tokens(d,closing,endfont,width,highs) if closing and (not paras or closing not in [p[0] for p in paras]) else []
             except ValueError:continue
             if any(len(ls)>7 for ls in paragraph_lines) or any(len(ls)>4 for ls in list_lines):continue
@@ -224,30 +245,34 @@ def compute_layout(d,blocks,x,width,bounds_h,position,centered,hindi):
 def render_editorial(post,handle,size,template_id,output_path,icon_paster=None,icon=None):
     tpl=choose_template(template_id,post)
     label,paper,kind,placement,accent=TEMPLATES[tpl]
-    w,h={'portrait':(1080,1350),'square':(1080,1080),'reel':(1080,1920)}.get(size,(1080,1350))
+    # Post images: true 2x font rendering, not upscaled 1080px pixels.
+    # Reels: 1080x1920 native frame to avoid excessive encoder memory on Render.
+    scale=1 if size=='reel' else POST_EXPORT_SCALE
+    bw,bh={'portrait':(1080,1350),'square':(1080,1080),'reel':(1080,1920)}.get(size,(1080,1350))
+    w,h=bw*scale,bh*scale
     # Stable per-template seed; different textures between samples, no source image baked in.
     seed=int(hashlib.sha256((tpl+str(post.get('headline',''))).encode()).hexdigest()[:8],16)
     im=paper_background((w,h),paper,seed)
     d=ImageDraw.Draw(im,'RGBA')
-    x=130 if kind not in ('center','dialogue') else 165
+    x=130*scale if kind not in ('center','dialogue') else 165*scale
     width=w-2*x
     align='center' if kind in ('center','dialogue','poem') else 'left'
     if align=='center':x=w//2
     # Existing corner handle and bottom-center uploaded logo remain the branding.
     handle=clean(handle,40)
     if handle:
-        hf=editorial_font(23,False,False)
-        d.text((66,68),handle,font=hf,fill=(71,65,62,156))
-    logo_space=190 if icon is not None else 100
-    y_top=240 if h>1500 else (155 if h>1100 else 130)
-    content_h=min(h-y_top-logo_space-54, 1300 if size=='reel' else h)
+        hf=editorial_font(23*scale,False,False)
+        d.text((66*scale,68*scale),handle,font=hf,fill=(71,65,62,156))
+    logo_space=(190 if icon is not None else 100)*scale
+    y_top=(240 if size=='reel' else (155 if size=='portrait' else 130))*scale
+    content_h=min(h-y_top-logo_space-54*scale, 1300*scale if size=='reel' else h)
     title,paras,items,closing,highs=normalized_post(post,tpl)
     # Never draw beyond the output canvas. Attempt a sequence of readable fits.
     # On very short square canvases, omit secondary text with an explicit warning.
     shortened=False
     for retry in range(18):
         try:
-            fit=compute_layout(d,(title,paras,items,closing,highs),x,width,content_h,kind,align=='center',bool(re.search('[\u0900-\u097F]',title+closing)))
+            fit=compute_layout(d,(title,paras,items,closing,highs),x,width,content_h,kind,align=='center',bool(re.search('[\u0900-\u097F]',title+closing)),scale)
             break
         except ValueError:
             if len(items)>4:
@@ -268,14 +293,14 @@ def render_editorial(post,handle,size,template_id,output_path,icon_paster=None,i
     else:
         raise ValueError('Poster copy is too long for a readable layout')
     ft,ts,tls,tstep,fb,bs,pls,ils,fc,cls,bstep,total=fit
-    y= (y_top+max(10,(content_h-total)//2)) if placement=='mid' else y_top
+    y= (y_top+max(10*scale,(content_h-total)//2)) if placement=='mid' else y_top
     if placement=='top' and total>content_h*.82:
-        y+=18
+        y+=18*scale
     # Background highlights exactly behind the selected words, not the entire paragraph.
     y=render_textblock(d,tls,x,y,ft,ts,tstep,align)
     y+=round(bs*.9)
     if kind in ('list','numbered','letter') and items:
-        if not ils:ils=[wrapped_tokens(d,s,fb,width-55,highs) for s in items]
+        if not ils:ils=[wrapped_tokens(d,s,fb,width-55*scale,highs) for s in items]
         for idx,lines in enumerate(ils):
             prefix=(f'{idx+1}. ' if kind=='numbered' else '– ')
             pf=fb
@@ -291,7 +316,7 @@ def render_editorial(post,handle,size,template_id,output_path,icon_paster=None,i
             y+=int(bs*.42)
     if cls:
         y+=int(bs*.28)
-        render_textblock(d,cls,x,y,fc,max(27,bs-1),bstep,align)
+        render_textblock(d,cls,x,y,fc,max(27*scale,bs-scale),bstep,align)
     if icon is not None and icon_paster is not None:
         # Reuses unchanged bottom-center uploaded icon positioning logic.
         icon_paster(im,icon,'editorial')
@@ -299,4 +324,4 @@ def render_editorial(post,handle,size,template_id,output_path,icon_paster=None,i
     output_path=Path(output_path)
     output_path.parent.mkdir(parents=True,exist_ok=True)
     im.save(output_path,optimize=True)
-    return {'template':tpl,'family':paper,'format':kind,'layout':label,'copyShortened':shortened}
+    return {'template':tpl,'family':paper,'format':kind,'layout':label,'copyShortened':shortened,'resolution':[w,h]}

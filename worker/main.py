@@ -81,8 +81,8 @@ def wrap_lines(draw,txt,font,max_width,max_lines=9):
     if len(lines)>max_lines:return None
     return lines
 
-def fit_lines(draw,txt,max_width,max_height,initial=76,minsize=28,spacing=1.26,max_lines=8,hindi=True):
-    for size in range(initial,minsize-1,-2):
+def fit_lines(draw,txt,max_width,max_height,initial=76,minsize=28,spacing=1.26,max_lines=8,hindi=True,scale=1):
+    for size in range(initial,minsize-1,-2*scale):
         font=get_font(size,hindi,True)
         lines=wrap_lines(draw,txt,font,max_width,max_lines)
         if not lines: continue
@@ -91,19 +91,19 @@ def fit_lines(draw,txt,max_width,max_height,initial=76,minsize=28,spacing=1.26,m
             return font,lines,int(size*spacing)
     raise ValueError('Text too long for poster')
 
-def fit_support_lines(draw,txt,max_width,max_height,hindi=True):
+def fit_support_lines(draw,txt,max_width,max_height,hindi=True,scale=1):
     txt=clean_text(txt,180)
     if not txt:return None,[],0
-    for size in range(34,19,-2):
+    for size in range(34*scale,19*scale,-2*scale):
         font=get_font(size,hindi,False)
         lines=wrap_lines(draw,txt,font,max_width,4)
         if not lines: continue
         step=int(size*1.28)
         if step*len(lines)<=max_height:
             return font,lines,step
-    font=get_font(20,hindi,False)
+    font=get_font(20*scale,hindi,False)
     lines=wrap_lines(draw,txt[:120],font,max_width,4) or [txt[:120]]
-    return font,lines,int(20*1.28)
+    return font,lines,int(20*scale*1.28)
 
 def make_texture(size,theme):
     w,h=size
@@ -146,39 +146,47 @@ def circle_crop_icon(icon:Image.Image, diameter:int)->Image.Image:
     return fitted
 
 def paste_uploaded_icon(base:Image.Image, icon:Image.Image, theme:str):
+    # Same bottom-center placement and existing framing; proportional at 2x photo export.
     w,h=base.size
+    scale=w/1080
     t=THEMES[theme]
-    diameter=82 if h>1200 else 74
-    framed=Image.new('RGBA',(diameter+16,diameter+16),(0,0,0,0))
+    diameter=round((82 if h/w>1.15 else 74)*scale)
+    rim=round(8*scale)
+    outer=diameter+rim*2
+    framed=Image.new('RGBA',(outer,outer),(0,0,0,0))
     fd=ImageDraw.Draw(framed)
-    fd.ellipse((0,0,diameter+15,diameter+15),fill=(0,0,0,220),outline=t['accent'],width=2)
+    fd.ellipse((0,0,outer-1,outer-1),fill=(0,0,0,220),outline=t['accent'],width=max(2,round(2*scale)))
     circ=circle_crop_icon(icon,diameter)
-    framed.paste(circ,(8,8),circ)
-    x=(w-framed.size[0])//2
-    y=h-160 if h>1200 else h-148
+    framed.paste(circ,(rim,rim),circ)
+    x=(w-outer)//2
+    # Keep the original 160px/148px relative bottom margin.
+    y=h-round((160 if h/w>1.15 else 148)*scale)
     base.paste(framed,(x,y),framed)
 
 def draw_poster(post,brand,handle,style,size,directory,icon:Image.Image|None=None):
-    w,h=(1080,1350) if size=='portrait' else (1080,1080)
-    image=make_texture((w,h),style)
+    scale=2  # Full-resolution image export, including the legacy dark template.
+    bw,bh=(1080,1350) if size=='portrait' else (1080,1080)
+    w,h=bw*scale,bh*scale
+    # Background is an intentionally soft texture; type is natively rasterized at 2x.
+    image=make_texture((bw,bh),style).resize((w,h),Image.Resampling.BICUBIC)
     d=ImageDraw.Draw(image,'RGBA')
     t=THEMES[style]
     handle_text=clean_text(handle,40)
-    d.text((70,72),handle_text,font=get_font(28,False,False),fill=(230,230,230,185))
+    d.text((70*scale,72*scale),handle_text,font=get_font(28*scale,False,False),fill=(230,230,230,185))
     quote=clean_text(post.get('headline',''),280)
     detail=clean_text(post.get('detail',''),140)
     eyebrow=clean_text(post.get('eyebrow',''),28)
     hindi=bool(re.search('[\u0900-\u097F]',quote+detail+eyebrow))
-    top_reserved=170
-    bottom_reserved=220 if icon is not None else 120
+    top_reserved=170*scale
+    bottom_reserved=(220 if icon is not None else 120)*scale
     available_h=h-top_reserved-bottom_reserved
     max_quote_h=int(available_h*0.7)
-    max_detail_h=max(54, available_h-max_quote_h-40)
-    qfont, qlines, qstep = fit_lines(d, quote, w-170, max_quote_h, initial=78 if not hindi else 72, minsize=30, max_lines=8, hindi=hindi)
-    dfont, dlines, dstep = fit_support_lines(d, detail, w-220, max_detail_h, hindi=hindi)
-    eb_font=get_font(24,False,False) if eyebrow else None
-    eb_gap=58 if eyebrow else 0
-    detail_gap=24 if dlines else 0
+    max_detail_h=max(54*scale, available_h-max_quote_h-40*scale)
+    qfont, qlines, qstep = fit_lines(d, quote, w-170*scale, max_quote_h, initial=(78 if not hindi else 72)*scale, minsize=30*scale, max_lines=8, hindi=hindi,scale=scale)
+    dfont, dlines, dstep = fit_support_lines(d, detail, w-220*scale, max_detail_h, hindi=hindi,scale=scale)
+    eb_font=get_font(24*scale,False,False) if eyebrow else None
+    eb_gap=58*scale if eyebrow else 0
+    detail_gap=24*scale if dlines else 0
     block_h=(qstep*len(qlines)) + detail_gap + (dstep*len(dlines)) + eb_gap
     y=top_reserved + max(0,(available_h-block_h)//2)
     if eyebrow:
@@ -199,44 +207,44 @@ def draw_poster(post,brand,handle,style,size,directory,icon:Image.Image|None=Non
     return file
 
 def make_smoke_overlay(path:Path):
-    w,h=720,1280
+    w,h=1080,1920
     img=Image.new('RGBA',(w,h),(0,0,0,0))
     dr=ImageDraw.Draw(img,'RGBA')
     random.seed(17)
     for _ in range(18):
-        x=random.randint(-80,w-60)
+        x=random.randint(-120,w-90)
         y=random.randint(0,h)
-        ww=random.randint(120,280)
-        hh=random.randint(70,180)
+        ww=random.randint(180,420)
+        hh=random.randint(105,270)
         alpha=random.randint(14,32)
         dr.ellipse((x,y,x+ww,y+hh),fill=(255,255,255,alpha))
     for _ in range(12):
-        x=random.randint(-40,w-100)
-        y=random.randint(h-280,h-40)
-        ww=random.randint(180,380)
-        hh=random.randint(50,120)
+        x=random.randint(-60,w-150)
+        y=random.randint(h-420,h-60)
+        ww=random.randint(270,570)
+        hh=random.randint(75,180)
         alpha=random.randint(18,38)
         dr.ellipse((x,y,x+ww,y+hh),fill=(245,245,245,alpha))
-    img=img.filter(ImageFilter.GaussianBlur(28))
+    img=img.filter(ImageFilter.GaussianBlur(42))
     img.save(path)
 
 def make_glow_overlay(path:Path, style:str):
-    w,h=720,1280
+    w,h=1080,1920
     img=Image.new('RGBA',(w,h),(0,0,0,0))
     d=ImageDraw.Draw(img,'RGBA')
     accent=THEMES[style]['accent']
     rgb=tuple(int(accent[i:i+2],16) for i in (1,3,5))
-    d.ellipse((-80,40,240,360),fill=(*rgb,28))
-    d.ellipse((500,920,860,1280),fill=(*rgb,24))
-    img=img.filter(ImageFilter.GaussianBlur(44))
+    d.ellipse((-120,60,360,540),fill=(*rgb,28))
+    d.ellipse((750,1380,1290,1920),fill=(*rgb,24))
+    img=img.filter(ImageFilter.GaussianBlur(66))
     img.save(path)
 
 def prepare_shorts_frame(poster_path:Path,out_dir:Path):
     poster=Image.open(poster_path).convert('RGB')
-    canvas=Image.new('RGB',(720,1280),(8,8,8))
-    fitted=ImageOps.contain(poster,(720,1280),method=Image.Resampling.LANCZOS)
-    x=(720-fitted.width)//2
-    y=(1280-fitted.height)//2
+    canvas=Image.new('RGB',(1080,1920),(8,8,8))
+    fitted=ImageOps.contain(poster,(1080,1920),method=Image.Resampling.LANCZOS)
+    x=(1080-fitted.width)//2
+    y=(1920-fitted.height)//2
     canvas.paste(fitted,(x,y))
     frame_path=out_dir/'shorts_frame.png'
     canvas.save(frame_path)
@@ -248,7 +256,7 @@ def render_video_shorts(poster_path:Path, duration:int, out_dir:Path, effect_sty
     frame_path=prepare_shorts_frame(poster_path,out_dir)
     out_mp4=out_dir/'reel.mp4'
     if effect_style=='none':
-        cmd=['ffmpeg','-hide_banner','-loglevel','error','-y','-loop','1','-i',str(frame_path),'-t',str(duration),'-r','24','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-movflags','+faststart',str(out_mp4)]
+        cmd=['ffmpeg','-hide_banner','-loglevel','error','-y','-loop','1','-i',str(frame_path),'-t',str(duration),'-r','30','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(out_mp4)]
         result=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
     else:
         smoke=out_dir/'smoke.png'; glow=out_dir/'glow.png'
@@ -276,7 +284,7 @@ def render_video_shorts(poster_path:Path, duration:int, out_dir:Path, effect_sty
              '-loop','1','-i',str(smoke),
              '-loop','1','-i',str(glow),
              '-filter_complex',filt,
-             '-map','[v]','-t',str(duration),'-r','24','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-movflags','+faststart',str(out_mp4)]
+             '-map','[v]','-t',str(duration),'-r','30','-c:v','libx264','-preset','fast','-crf','18','-pix_fmt','yuv420p','-movflags','+faststart',str(out_mp4)]
         result=subprocess.run(cmd,capture_output=True,text=True,timeout=180)
     if result.returncode!=0:
         raise RuntimeError('FFmpeg video render failed: '+result.stderr[-800:])
